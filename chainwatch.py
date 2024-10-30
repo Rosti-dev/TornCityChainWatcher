@@ -72,16 +72,29 @@ class ChainWatcherApp:
         # Thread for background API calls
         self.thread = None
         
+        
     def ensure_alarm_files_exist(self):
-        for sound, url in ALARM_SOUNDS_URLS.items():
-            if not os.path.exists(sound):
-                try:
-                    print(f"Downloading {sound}...")
-                    urllib.request.urlretrieve(url, sound)
-                    print(f"Downloaded {sound} successfully.")
-                except Exception as e:
-                    print(f"Failed to download {sound}: {e}", file=sys.stderr)
-                    messagebox.showerror("Error", f"Failed to download {sound}: {e}")
+        # Check if either of the required sound files is missing
+        missing_files = [sound for sound, url in ALARM_SOUNDS_URLS.items() if not os.path.exists(sound)]
+
+        if missing_files:
+            # Prompt the user to confirm the download
+            response = messagebox.askyesno("Missing Sound Files",
+                                           "No sound files have been found, would you like to download them? (Two files in total)")
+            if response:
+                # User chose to download the missing files
+                for sound, url in ALARM_SOUNDS_URLS.items():
+                    if not os.path.exists(sound):
+                        try:
+                            print(f"Downloading {sound}...")
+                            urllib.request.urlretrieve(url, sound)
+                            print(f"Downloaded {sound} successfully.")
+                        except Exception as e:
+                            print(f"Failed to download {sound}: {e}", file=sys.stderr)
+                            messagebox.showerror("Error", f"Failed to download {sound}: {e}")
+            else:
+                # User chose not to download the files
+                print("User opted not to download the missing sound files.")
         
     def setup_gui(self):
         # Time left label
