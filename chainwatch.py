@@ -215,6 +215,25 @@ class ChainWatcherApp:
         self.debug_mode = tk.BooleanVar(value=False)  # Debug mode toggle
         debug_checkbox = ttk.Checkbutton(self.root, text="Debug", variable=self.debug_mode)
         debug_checkbox.pack(pady=5)
+        
+         # Add Faction ID checkbox and entry field
+        self.use_faction_id = tk.BooleanVar(value=False)
+        faction_id_frame = tk.Frame(self.root)
+        faction_id_frame.pack(pady=5)
+        faction_id_checkbox = ttk.Checkbutton(faction_id_frame, text="Faction ID", variable=self.use_faction_id, command=self.toggle_faction_id)
+        faction_id_checkbox.pack(side=tk.LEFT)
+
+        # Faction ID entry (hidden by default)
+        self.faction_id = tk.StringVar()
+        self.faction_id_entry = ttk.Entry(faction_id_frame, textvariable=self.faction_id)
+        self.faction_id_entry.pack(side=tk.LEFT)
+        self.faction_id_entry.pack_forget()  # Hide the entry field initially
+
+    def toggle_faction_id(self):
+        if self.use_faction_id.get():
+            self.faction_id_entry.pack(side=tk.LEFT)  # Show the entry field
+        else:
+            self.faction_id_entry.pack_forget()  # Hide the entry field
 
     def toggle_backup_timer(self):
         if self.backup_timer_enabled.get():
@@ -289,14 +308,19 @@ class ChainWatcherApp:
             else:
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
 
+            # Construct the API URL based on Faction ID
+            base_url = "https://api.torn.com/faction"
+            faction_id = self.faction_id.get() if self.use_faction_id.get() and self.faction_id.get() else None
+            api_url = f"{base_url}/{faction_id}?selections=chain&key={self.api_key.get()}" if faction_id else f"{base_url}/?selections=chain&key={self.api_key.get()}"
+
             # Debug log for API attempt
             if self.debug_mode.get():
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                print(f"[{timestamp}] Attempting API call...")
+                print(f"[{timestamp}] Attempting API call to URL: {api_url}")
 
             try:
                 # Make the API call
-                response = requests.get(f"https://api.torn.com/faction/?selections=chain&key={self.api_key.get()}&comment=PyChainwatcher")
+                response = requests.get(api_url)
                 response.raise_for_status()
                 data = response.json()
                 
@@ -328,12 +352,12 @@ class ChainWatcherApp:
 
             # Wait the interval before the next API call
             time.sleep(interval)
-                    
+
 
     def update_timer_loop(self):
         while self.running:
             # Calculate main remaining time based on `chain_end_time`
-            self.remaining_seconds = max(0, self.chain_end_time - int(time.time()))
+            self.remaining_seconds = max(0, self.chain_end_time - int(time.time())-1)
 
             # Update main timer display with "T-:" prefix
             if self.remaining_seconds <= 0:
@@ -352,10 +376,10 @@ class ChainWatcherApp:
                 self.diagnostics_box.config(text="Backup Timer: Disabled")
             
             # Handle alarm triggers and color changes for main timer
-            if self.remaining_seconds <= self.alarm_trigger_seconds.get():
+            if self.remaining_seconds > 0 and self.remaining_seconds <= self.alarm_trigger_seconds.get():
                 self.root.config(bg="red")
                 self.play_alarm(loop=True)
-            elif self.remaining_seconds <= self.pre_alarm_trigger_seconds.get():
+            elif self.remaining_seconds > 0 and self.remaining_seconds <= self.pre_alarm_trigger_seconds.get():
                 self.root.config(bg="yellow")
                 self.play_pre_alarm(loop=True)
             else:
