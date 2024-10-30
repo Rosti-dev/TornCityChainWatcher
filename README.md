@@ -17,8 +17,9 @@ The **Chain Watcher App** is a GUI-based Python application that monitors a chai
 Ensure you have Python installed (version 3.7+ recommended). 
 
 Install Dependencies
+```
 pip install -r requirements.txt
-
+```
 
 ### Clone the Repository
 
