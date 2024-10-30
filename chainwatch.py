@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog
 from tkinter import messagebox
+from datetime import datetime
 import time
 import threading
 import requests
@@ -10,6 +11,7 @@ import json
 import ctypes
 import sys
 import urllib.request
+
 
 # Initialize Pygame mixer for alarm sounds
 pygame.mixer.init()
@@ -39,7 +41,7 @@ ALARM_SOUNDS_URLS = {
 SETTINGS_FILE = os.path.join(DATA_FOLDER, "chain_watcher_settings.json")
 
 class ChainWatcherApp:
-    def __init__(self, root):
+    def __init__(self, root):  # Ensure `self` is the first parameter
         self.root = root
         self.root.title("Chain Watcher App")
         
@@ -59,25 +61,46 @@ class ChainWatcherApp:
         self.chain_end_time = 0
         self.running = False
         self.panic_mode = False  # Track if we are in panic mode
-        
+
         # Load previous settings
         self.load_settings()
-        
+
         # Ensure alarm files are present
         self.ensure_alarm_files_exist()
-        
+
         # GUI Setup
         self.setup_gui()
-        
+
         # Thread for background API calls
         self.thread = None
-        
-        
-    def ensure_alarm_files_exist(self):
-        # Check if either of the required sound files is missing
-        missing_files = [sound for sound, url in ALARM_SOUNDS_URLS.items() if not os.path.exists(sound)]
 
-        if missing_files:
+        self.last_known_remaining_seconds = 0
+        self.last_known_backup_remaining_seconds = 0
+
+
+    def load_settings(self):
+         if os.path.exists(SETTINGS_FILE):
+                with open(SETTINGS_FILE, 'r') as f:
+                    settings = json.load(f)
+                    self.api_interval.set(settings.get("api_interval", 5))
+                    self.panic_interval.set(settings.get("panic_interval", 2))
+                    self.alarm_trigger_seconds.set(settings.get("alarm_trigger_seconds", 90))
+                    self.pre_alarm_trigger_seconds.set(settings.get("pre_alarm_trigger_seconds", 90))
+                    self.alarm_volume.set(settings.get("alarm_volume", 0.5))
+                    self.alarm_sound_choice.set(settings.get("alarm_sound_choice", ALARM_SOUNDS[0]))
+                    self.pre_alarm_sound_choice.set(settings.get("pre_alarm_sound_choice", PRE_ALARM_SOUNDS[0]))
+                    self.api_key.set(settings.get("api_key", ""))
+                    self.prevent_sleep.set(settings.get("prevent_sleep", False))
+                    self.keep_on_top.set(settings.get("keep_on_top", False))
+                    self.backup_timer_enabled.set(settings.get("backup_timer_enabled", False))
+                    self.update_keep_on_top()
+
+
+    def ensure_alarm_files_exist(self):
+         # Check if either of the required sound files is missing
+         missing_files = [sound for sound, url in ALARM_SOUNDS_URLS.items() if not os.path.exists(sound)]
+
+         if missing_files:
             # Prompt the user to confirm the download
             response = messagebox.askyesno("Missing Sound Files",
                                            "No sound files have been found, would you like to download them? (Two files in total)")
@@ -95,7 +118,7 @@ class ChainWatcherApp:
             else:
                 # User chose not to download the files
                 print("User opted not to download the missing sound files.")
-        
+
     def setup_gui(self):
         # Time left label
         self.time_label = tk.Label(self.root, text="T-: 00:00", font=("Helvetica", 60))
@@ -188,6 +211,11 @@ class ChainWatcherApp:
         stop_button = ttk.Button(button_frame, text="Stop", command=self.stop_watching)
         stop_button.pack(side=tk.LEFT, padx=5)
 
+        # Add a debug checkbox to the GUI
+        self.debug_mode = tk.BooleanVar(value=False)  # Debug mode toggle
+        debug_checkbox = ttk.Checkbutton(self.root, text="Debug", variable=self.debug_mode)
+        debug_checkbox.pack(pady=5)
+
     def toggle_backup_timer(self):
         if self.backup_timer_enabled.get():
             self.diagnostics_box.config(text="Backup Timer: Enabled")
@@ -221,9 +249,10 @@ class ChainWatcherApp:
     def start_watching(self):
         if not self.running:
             self.running = True
-            self.thread = threading.Thread(target=self.watch_chain)
-            self.thread.daemon = True
-            self.thread.start()
+            # Start the API polling loop in one thread
+            threading.Thread(target=self.watch_chain, daemon=True).start()
+            # Start the continuous timer countdown loop in another thread
+            threading.Thread(target=self.update_timer_loop, daemon=True).start()
 
     def stop_watching(self):
         self.running = False
@@ -234,81 +263,110 @@ class ChainWatcherApp:
     def update_keep_on_top(self):
         self.root.attributes('-topmost', self.keep_on_top.get())
 
-    def flash_window(self):
-        for _ in range(3):
+    def flash_failure(self):
+        # Flash between yellow and red to indicate API failure
+        for _ in range(3):  # Flash three times for visual feedback
             self.root.config(bg="yellow")
             self.root.update()
-            time.sleep(0.1)
-            self.root.config(bg="SystemButtonFace")
+            time.sleep(0.2)
+            self.root.config(bg="red")
             self.root.update()
-            time.sleep(0.1)
+            time.sleep(0.2)
+
+
+
 
     def watch_chain(self):
+        api_failed = False  # Track API failure
+
         while self.running:
+            # Determine interval based on API status
+            interval = self.panic_interval.get() if api_failed else self.api_interval.get()
+
+            # Prevent sleep if specified
             if self.prevent_sleep.get():
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000002)
             else:
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
-            
+
+            # Debug log for API attempt
+            if self.debug_mode.get():
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                print(f"[{timestamp}] Attempting API call...")
+
             try:
-                # Call the API
+                # Make the API call
                 response = requests.get(f"https://api.torn.com/faction/?selections=chain&key={self.api_key.get()}&comment=PyChainwatcher")
                 response.raise_for_status()
                 data = response.json()
                 
-                # Extract chain end time and remaining seconds
-                self.chain_end_time = data["chain"]["end"]
-                self.remaining_seconds = max(0, self.chain_end_time - int(time.time()))
-                
-                # Initialize the backup timer countdown if enabled
+                # Update `chain_end_time` from the API, applying the 1-second offset
+                self.chain_end_time = data["chain"]["end"] - 1  # Apply 1-second offset
+
+                # Set the backup timer timeout if enabled
                 if self.backup_timer_enabled.get():
                     self.backup_remaining_seconds = data["chain"]["timeout"]
-                
-                # Enter panic mode if needed
-                self.panic_mode = self.remaining_seconds <= self.alarm_trigger_seconds.get()
-                
-                # Update the GUI clock every second until the next API call
-                interval = self.panic_interval.get() if self.panic_mode else self.api_interval.get()
-                for _ in range(interval):
-                    if not self.running:
-                        break
-                    self.update_clock()
-                    time.sleep(1)
-            except Exception as e:
-                print(f"API request failed: {e}", file=sys.stderr)
-                self.flash_window()
 
-    def update_clock(self):
-        # Main timer display
-        if self.remaining_seconds <= 0:
-            self.time_label.config(text="T-: 00:00")
-        else:
-            minutes, seconds = divmod(self.remaining_seconds, 60)
-            self.time_label.config(text=f"T-: {minutes:02}:{seconds:02}")
-        
-        # Backup timer display in diagnostics box
-        if self.backup_timer_enabled.get():
-            if self.backup_remaining_seconds <= 0:
-                self.diagnostics_box.config(text="Backup Timer: 00:00")
+                # Log success in debug mode
+                if self.debug_mode.get():
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"[{timestamp}] API call successful: Chain end time updated.")
+
+                # Reset failure flag
+                api_failed = False
+                self.root.config(bg="SystemButtonFace")
+
+                # Enter panic mode if remaining time is below alarm threshold
+                self.panic_mode = (self.chain_end_time - int(time.time())) <= self.alarm_trigger_seconds.get()
+
+            except Exception as e:
+                # Log error with timestamp, enter panic mode, and flash the screen
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                print(f"[{timestamp}] API request failed: {e}", file=sys.stderr)
+                api_failed = True  # Set API failure flag
+                self.flash_failure()  # Flash the screen for API failure
+
+            # Wait the interval before the next API call
+            time.sleep(interval)
+                    
+
+    def update_timer_loop(self):
+        while self.running:
+            # Calculate main remaining time based on `chain_end_time`
+            self.remaining_seconds = max(0, self.chain_end_time - int(time.time()))
+
+            # Update main timer display with "T-:" prefix
+            if self.remaining_seconds <= 0:
+                self.time_label.config(text="T-: 00:00")
             else:
+                minutes, seconds = divmod(self.remaining_seconds, 60)
+                self.time_label.config(text=f"T-: {minutes:02}:{seconds:02}")
+            
+            # Backup timer display in diagnostics box
+            if self.backup_timer_enabled.get():
+                # Decrement backup timer if enabled
+                self.backup_remaining_seconds = max(0, self.backup_remaining_seconds - 1)
                 backup_minutes, backup_seconds = divmod(self.backup_remaining_seconds, 60)
                 self.diagnostics_box.config(text=f"Backup Timer: {backup_minutes:02}:{backup_seconds:02}")
-        
-        # Countdown for both timers
-        self.remaining_seconds -= 1
-        if self.backup_timer_enabled.get():
-            self.backup_remaining_seconds -= 1
+            else:
+                self.diagnostics_box.config(text="Backup Timer: Disabled")
             
-        # Handle alarm triggers and color changes for main timer
-        if self.remaining_seconds <= self.alarm_trigger_seconds.get():
-            self.root.config(bg="red")
-            self.play_alarm(loop=True)
-        elif self.remaining_seconds <= self.pre_alarm_trigger_seconds.get():
-            self.root.config(bg="yellow")
-            self.play_pre_alarm(loop=True)
-        else:
-            self.root.config(bg="SystemButtonFace")
-            self.stop_pre_alarm()
+            # Handle alarm triggers and color changes for main timer
+            if self.remaining_seconds <= self.alarm_trigger_seconds.get():
+                self.root.config(bg="red")
+                self.play_alarm(loop=True)
+            elif self.remaining_seconds <= self.pre_alarm_trigger_seconds.get():
+                self.root.config(bg="yellow")
+                self.play_pre_alarm(loop=True)
+            else:
+                self.root.config(bg="SystemButtonFace")
+                self.stop_pre_alarm()
+
+            # Wait exactly one second before updating the timer again
+            time.sleep(1)
+
+
+
 
     def play_alarm(self, loop=False):
         pygame.mixer.music.load(self.alarm_sound_choice.get())
