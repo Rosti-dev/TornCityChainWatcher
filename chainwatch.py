@@ -46,15 +46,16 @@ class ChainWatcherApp:
         self.api_interval = tk.IntVar(value=5)  # Default API call interval in seconds
         self.panic_interval = tk.IntVar(value=2)  # API call interval while in panic mode
         self.alarm_trigger_seconds = tk.IntVar(value=60)  # Alarm trigger threshold in seconds
-        self.pre_alarm_trigger_seconds = tk.IntVar(value=90)  # Pre-Alarm trigger threshold in seconds (updated to 90 seconds)
+        self.pre_alarm_trigger_seconds = tk.IntVar(value=90)  # Pre-Alarm trigger threshold in seconds
         self.alarm_volume = tk.DoubleVar(value=0.5)  # Volume control for alarm
         self.alarm_sound_choice = tk.StringVar(value=ALARM_SOUNDS[0])
         self.pre_alarm_sound_choice = tk.StringVar(value=PRE_ALARM_SOUNDS[0])
         self.api_key = tk.StringVar()  # API Key (no default value set in script)
         self.prevent_sleep = tk.BooleanVar(value=False)  # Prevent PC from going to sleep
         self.keep_on_top = tk.BooleanVar(value=False)  # Keep window on top of all others
-        
+        self.backup_timer_enabled = tk.BooleanVar(value=False)  # Enable or disable backup timer
         self.remaining_seconds = 0
+        self.backup_remaining_seconds = 0  # Initialize backup timer countdown
         self.chain_end_time = 0
         self.running = False
         self.panic_mode = False  # Track if we are in panic mode
@@ -84,8 +85,12 @@ class ChainWatcherApp:
         
     def setup_gui(self):
         # Time left label
-        self.time_label = tk.Label(self.root, text="Time Left: 00:00", font=("Helvetica", 24))
+        self.time_label = tk.Label(self.root, text="T-: 00:00", font=("Helvetica", 60))
         self.time_label.pack(pady=10)
+        
+        # Diagnostics box for backup timer
+        self.diagnostics_box = tk.Label(self.root, text="Backup Timer: Disabled", font=("Helvetica", 12))
+        self.diagnostics_box.pack(pady=5)
         
         # Volume control
         volume_frame = tk.Frame(self.root)
@@ -121,6 +126,12 @@ class ChainWatcherApp:
         tk.Label(panic_interval_frame, text="Panic Mode API Interval (seconds):").pack(side=tk.LEFT)
         panic_interval_entry = ttk.Entry(panic_interval_frame, textvariable=self.panic_interval)
         panic_interval_entry.pack(side=tk.LEFT)
+        
+        # Backup Timer checkbox
+        backup_timer_frame = tk.Frame(self.root)
+        backup_timer_frame.pack(pady=5)
+        backup_timer_checkbox = ttk.Checkbutton(backup_timer_frame, text="Enable Backup Timer", variable=self.backup_timer_enabled, command=self.toggle_backup_timer)
+        backup_timer_checkbox.pack(side=tk.LEFT)
         
         # Alarm sound picker
         sound_frame = tk.Frame(self.root)
@@ -164,6 +175,12 @@ class ChainWatcherApp:
         stop_button = ttk.Button(button_frame, text="Stop", command=self.stop_watching)
         stop_button.pack(side=tk.LEFT, padx=5)
 
+    def toggle_backup_timer(self):
+        if self.backup_timer_enabled.get():
+            self.diagnostics_box.config(text="Backup Timer: Enabled")
+        else:
+            self.diagnostics_box.config(text="Backup Timer: Disabled")
+    
     def open_api_key_window(self):
         # New window for setting the API Key
         api_key_window = tk.Toplevel(self.root)
@@ -226,8 +243,13 @@ class ChainWatcherApp:
                 response.raise_for_status()
                 data = response.json()
                 
+                # Extract chain end time and remaining seconds
                 self.chain_end_time = data["chain"]["end"]
                 self.remaining_seconds = max(0, self.chain_end_time - int(time.time()))
+                
+                # Initialize the backup timer countdown if enabled
+                if self.backup_timer_enabled.get():
+                    self.backup_remaining_seconds = data["chain"]["timeout"]
                 
                 # Enter panic mode if needed
                 self.panic_mode = self.remaining_seconds <= self.alarm_trigger_seconds.get()
@@ -244,23 +266,36 @@ class ChainWatcherApp:
                 self.flash_window()
 
     def update_clock(self):
+        # Main timer display
         if self.remaining_seconds <= 0:
-            self.time_label.config(text="Time Left: 00:00")
+            self.time_label.config(text="T-: 00:00")
         else:
             minutes, seconds = divmod(self.remaining_seconds, 60)
-            self.time_label.config(text=f"Time Left: {minutes:02}:{seconds:02}")
-            
-            if self.remaining_seconds <= self.alarm_trigger_seconds.get():
-                self.root.config(bg="red")
-                self.play_alarm(loop=True)
-            elif self.remaining_seconds <= self.pre_alarm_trigger_seconds.get():
-                self.root.config(bg="yellow")
-                self.play_pre_alarm(loop=True)
-            else:
-                self.root.config(bg="SystemButtonFace")
-                self.stop_pre_alarm()
+            self.time_label.config(text=f"T-: {minutes:02}:{seconds:02}")
         
+        # Backup timer display in diagnostics box
+        if self.backup_timer_enabled.get():
+            if self.backup_remaining_seconds <= 0:
+                self.diagnostics_box.config(text="Backup Timer: 00:00")
+            else:
+                backup_minutes, backup_seconds = divmod(self.backup_remaining_seconds, 60)
+                self.diagnostics_box.config(text=f"Backup Timer: {backup_minutes:02}:{backup_seconds:02}")
+        
+        # Countdown for both timers
         self.remaining_seconds -= 1
+        if self.backup_timer_enabled.get():
+            self.backup_remaining_seconds -= 1
+            
+        # Handle alarm triggers and color changes for main timer
+        if self.remaining_seconds <= self.alarm_trigger_seconds.get():
+            self.root.config(bg="red")
+            self.play_alarm(loop=True)
+        elif self.remaining_seconds <= self.pre_alarm_trigger_seconds.get():
+            self.root.config(bg="yellow")
+            self.play_pre_alarm(loop=True)
+        else:
+            self.root.config(bg="SystemButtonFace")
+            self.stop_pre_alarm()
 
     def play_alarm(self, loop=False):
         pygame.mixer.music.load(self.alarm_sound_choice.get())
@@ -294,7 +329,8 @@ class ChainWatcherApp:
             "pre_alarm_sound_choice": self.pre_alarm_sound_choice.get(),
             "api_key": self.api_key.get(),
             "prevent_sleep": self.prevent_sleep.get(),
-            "keep_on_top": self.keep_on_top.get()
+            "keep_on_top": self.keep_on_top.get(),
+            "backup_timer_enabled": self.backup_timer_enabled.get()
         }
         with open(SETTINGS_FILE, 'w') as f:
             json.dump(settings, f)
@@ -313,6 +349,7 @@ class ChainWatcherApp:
                 self.api_key.set(settings.get("api_key", ""))
                 self.prevent_sleep.set(settings.get("prevent_sleep", False))
                 self.keep_on_top.set(settings.get("keep_on_top", False))
+                self.backup_timer_enabled.set(settings.get("backup_timer_enabled", False))
                 self.update_keep_on_top()
 
 # Main Application
